@@ -12,6 +12,13 @@ import (
 const (
 	seeds       = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	seedsLength = len(seeds)
+	usage       = `Usage:
+	generate short url:
+	curl -X POST -d '{"orig": "https://fengxsong.github.io"}' http://localhost:8000/v1/
+	{"Short":"jxtjX","Orig":"https://fengxsong.github.io","Create":"2016-12-22T11:43:57.665721+08:00","Click":0,"Expiration":"2016-12-22T11:48:57.665721+08:00"}
+	get short url stats:
+	curl http://localhost:8000/v1/jxtjX?stats=xxx
+`
 )
 
 func init() {
@@ -130,6 +137,9 @@ func (s *Srv) Redirect(ctx *gin.Context) {
 
 func (s *Srv) Run(addr string) {
 	r := gin.Default()
+	r.GET("/v1/", func(ctx *gin.Context) {
+		ctx.String(http.StatusOK, usage)
+	})
 	r.GET("/v1/:short", s.Redirect)
 	r.POST("/v1/", s.Gen)
 	r.Run(addr)
