@@ -20,5 +20,5 @@ redirect to original url
 
     curl -X GET http://localhost:8000/v1/jxtjX
 
-q: should I reduce the interval of removing the expired keys?
-
+q1: should I reduce the interval of removing the expired keys?
+q2: should I use `sync.Mutex` to lock or unlock a key from a map when I get or delete it?

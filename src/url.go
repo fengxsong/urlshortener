@@ -22,10 +22,14 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
+type Urls struct {
+	items map[string]*Url
+	sync.Mutex
+}
+
 type Srv struct {
-	urls map[string]*Url
+	urls Urls
 	pool chan string
-	mu   *sync.Mutex
 	cfg  struct {
 		strLength  int
 		expiration time.Duration
@@ -34,9 +38,10 @@ type Srv struct {
 
 func NewSrv(poolSize, strl int, expiration time.Duration) (*Srv, error) {
 	srv := &Srv{
-		urls: make(map[string]*Url),
+		urls: Urls{
+			items: make(map[string]*Url),
+		},
 		pool: make(chan string, poolSize),
-		mu:   new(sync.Mutex),
 	}
 	srv.cfg.strLength = strl
 	srv.cfg.expiration = expiration
@@ -53,7 +58,7 @@ func NewSrv(poolSize, strl int, expiration time.Duration) (*Srv, error) {
 func (s *Srv) fillingPool() {
 	for {
 		rs := s.genRandomString(s.cfg.strLength)
-		if _, ok := s.urls[rs]; !ok {
+		if s.Get(rs) == nil {
 			s.pool <- rs
 		}
 	}
@@ -66,14 +71,14 @@ func (s *Srv) dump(fn string) {
 		select {
 		case <-c:
 			s.deleteExpired()
-			if len(s.urls) != 0 {
+			if len(s.urls.items) != 0 {
 				f, err := os.Create(fn)
 				if err != nil {
 					panic(err)
 				}
 				defer f.Close()
 				enc := gob.NewEncoder(f)
-				err = enc.Encode(s.urls)
+				err = enc.Encode(s.urls.items)
 				if err != nil {
 					panic(err)
 				}
@@ -103,15 +108,17 @@ func (s *Srv) load(fn string) error {
 		if err != nil {
 			return err
 		}
-		s.urls = urls
+		s.urls.items = urls
 	}
 	return nil
 }
 
 func (s *Srv) deleteExpired() {
-	for k, v := range s.urls {
+	for k, v := range s.urls.items {
 		if v.isExpired() {
-			delete(s.urls, k)
+			s.urls.Lock()
+			delete(s.urls.items, k)
+			s.urls.Unlock()
 		}
 	}
 }
@@ -127,7 +134,7 @@ func (s *Srv) cleaner() {
 }
 
 func (s *Srv) reset() {
-	s.urls = make(map[string]*Url)
+	s.urls = Urls{items: make(map[string]*Url)}
 }
 
 func (s *Srv) genRandomString(l int) string {
@@ -146,14 +153,16 @@ func (s *Srv) Set(orig string) *Url {
 		Create:     time.Now(),
 		Expiration: time.Now().Add(s.cfg.expiration),
 	}
-	s.mu.Lock()
-	s.urls[uniqStr] = u
-	s.mu.Unlock()
+	s.urls.Lock()
+	s.urls.items[uniqStr] = u
+	s.urls.Unlock()
 	return u
 }
 
 func (s *Srv) Get(shortUrl string) *Url {
-	if u, ok := s.urls[shortUrl]; ok {
+	s.urls.Lock()
+	defer s.urls.Unlock()
+	if u, ok := s.urls.items[shortUrl]; ok {
 		return u
 	}
 	return nil
@@ -162,7 +171,7 @@ func (s *Srv) Get(shortUrl string) *Url {
 func (s *Srv) String() string {
 	buf := new(bytes.Buffer)
 	buf.WriteString("KEY\tEXPIRE\n------------------\n")
-	for k, v := range s.urls {
+	for k, v := range s.urls.items {
 		buf.WriteString(k)
 		buf.WriteString("\t")
 		buf.WriteString(strconv.FormatBool(v.isExpired()))
