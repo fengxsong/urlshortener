@@ -6,6 +6,9 @@ import (
 )
 
 func main() {
-	s := urlshortener.NewSrv(1024, 5, 5*time.Minute)
+	s, err := urlshortener.NewSrv(1024, 5, 5*time.Minute)
+	if err != nil {
+		panic(err)
+	}
 	s.Run(":8000")
 }

@@ -1,24 +1,21 @@
 package urlshortener
 
 import (
-	"github.com/gin-gonic/gin"
+	"bytes"
+	"encoding/gob"
 	"math/rand"
-	"net/http"
-	"strings"
+	"os"
+	"os/signal"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
 const (
 	seeds       = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	seedsLength = len(seeds)
-	usage       = `Usage:
-	generate short url:
-	curl -X POST -d '{"orig": "https://fengxsong.github.io"}' http://localhost:8000/v1/
-	{"Short":"jxtjX","Orig":"https://fengxsong.github.io","Create":"2016-12-22T11:43:57.665721+08:00","Click":0,"Expiration":"2016-12-22T11:48:57.665721+08:00"}
-	get short url stats:
-	curl http://localhost:8000/v1/jxtjX?stats=xxx
-`
+	gobf        = "urlshortener.gob"
 )
 
 func init() {
@@ -35,7 +32,7 @@ type Srv struct {
 	}
 }
 
-func NewSrv(poolSize, strl int, expiration time.Duration) *Srv {
+func NewSrv(poolSize, strl int, expiration time.Duration) (*Srv, error) {
 	srv := &Srv{
 		urls: make(map[string]*Url),
 		pool: make(chan string, poolSize),
@@ -43,9 +40,14 @@ func NewSrv(poolSize, strl int, expiration time.Duration) *Srv {
 	}
 	srv.cfg.strLength = strl
 	srv.cfg.expiration = expiration
+	err := srv.load(gobf)
+	if err != nil {
+		return nil, err
+	}
 	go srv.fillingPool()
-	go srv.deleteExpired()
-	return srv
+	go srv.cleaner()
+	go srv.dump(gobf)
+	return srv, nil
 }
 
 func (s *Srv) fillingPool() {
@@ -55,6 +57,55 @@ func (s *Srv) fillingPool() {
 			s.pool <- rs
 		}
 	}
+}
+
+func (s *Srv) dump(fn string) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	for {
+		select {
+		case <-c:
+			s.deleteExpired()
+			if len(s.urls) != 0 {
+				f, err := os.Create(fn)
+				if err != nil {
+					panic(err)
+				}
+				defer f.Close()
+				enc := gob.NewEncoder(f)
+				err = enc.Encode(s.urls)
+				if err != nil {
+					panic(err)
+				}
+			} else {
+				os.Remove(fn)
+			}
+			os.Exit(1)
+		}
+	}
+}
+
+func isExist(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || os.IsExist(err)
+}
+
+func (s *Srv) load(fn string) error {
+	if isExist(fn) {
+		f, err := os.Open(fn)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		urls := make(map[string]*Url)
+		dec := gob.NewDecoder(f)
+		err = dec.Decode(&urls)
+		if err != nil {
+			return err
+		}
+		s.urls = urls
+	}
+	return nil
 }
 
 func (s *Srv) deleteExpired() {
@@ -73,6 +124,10 @@ func (s *Srv) cleaner() {
 			s.deleteExpired()
 		}
 	}
+}
+
+func (s *Srv) reset() {
+	s.urls = make(map[string]*Url)
 }
 
 func (s *Srv) genRandomString(l int) string {
@@ -104,49 +159,16 @@ func (s *Srv) Get(shortUrl string) *Url {
 	return nil
 }
 
-func (s *Srv) Gen(ctx *gin.Context) {
-	var reqBody Req
-	if err := ctx.BindJSON(&reqBody); err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+func (s *Srv) String() string {
+	buf := new(bytes.Buffer)
+	buf.WriteString("KEY\tEXPIRE\n------------------\n")
+	for k, v := range s.urls {
+		buf.WriteString(k)
+		buf.WriteString("\t")
+		buf.WriteString(strconv.FormatBool(v.isExpired()))
+		buf.WriteString("\n")
 	}
-	orig := strings.TrimSpace(reqBody.Orig)
-	if orig != "" && (strings.HasPrefix(orig, "http:") || strings.HasPrefix(orig, "https:")) {
-		u := s.Set(orig)
-		ctx.JSON(http.StatusOK, u)
-		return
-	}
-	ctx.JSON(http.StatusNotAcceptable, gin.H{"error": "field `orig` should not be empty and it startswith `http:` or `https:`"})
-}
-
-func (s *Srv) Redirect(ctx *gin.Context) {
-	short := ctx.Param("short")
-	u := s.Get(short)
-	if u == nil || u.isExpired() {
-		ctx.JSON(http.StatusNotFound, gin.H{"error": "invalid short url, please recheck"})
-		return
-	}
-	stats := ctx.Query("stats")
-	if stats != "" {
-		ctx.JSON(http.StatusOK, u)
-		return
-	}
-	u.Click++
-	ctx.Redirect(http.StatusMovedPermanently, u.Orig)
-}
-
-func (s *Srv) Run(addr string) {
-	r := gin.Default()
-	r.GET("/v1/", func(ctx *gin.Context) {
-		ctx.String(http.StatusOK, usage)
-	})
-	r.GET("/v1/:short", s.Redirect)
-	r.POST("/v1/", s.Gen)
-	r.Run(addr)
-}
-
-type Req struct {
-	Orig string `json:"orig"`
+	return buf.String()
 }
 
 type Url struct {
